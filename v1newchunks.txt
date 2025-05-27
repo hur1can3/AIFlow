@@ -1,0 +1,849 @@
+// --- START CHUNK: AIFlow.Cli.csproj.txt ---
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>aiflow-cli</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\Resources.Designer.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\Resources.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
+// --- END CHUNK: AIFlow.Cli.csproj.txt ---
+
+// --- START CHUNK: Program.cs ---
+using System.CommandLine;
+using System.CommandLine.Builder;
+using System.CommandLine.Parsing;
+using System.Globalization;
+using System.Reflection;
+using System.Resources;
+using AIFlow.Cli.Commands;
+
+public class Program
+{
+    private static ResourceManager? _resourceManager;
+
+    public static string GetLocalizedString(string key, params object[] args)
+    {
+        _resourceManager ??= new ResourceManager("AIFlow.Cli.Properties.Resources", Assembly.GetExecutingAssembly());
+        CultureInfo culture = CultureInfo.CurrentUICulture;
+        try 
+        { 
+            string? format = _resourceManager.GetString(key, culture); 
+            if (format == null) return $"[{key}]"; 
+            return args.Length > 0 ? string.Format(culture, format, args) : format; 
+        }
+        catch (MissingManifestResourceException)
+        {
+            // Fallback for environments where resources might not be found (e.g. single file publish without embedding)
+            // Or if the resource namespace/name is incorrect.
+            // Console.Error.WriteLine($"Warning: Resource manifest for 'AIFlow.Cli.Properties.Resources' not found. Using fallback for key '{key}'.");
+            if (key == "CliDescription") return "AIFlow CLI - Manages collaborative workflows with AI (fallback).";
+            return $"[[MissingResources:{key}]]";
+        }
+        catch (Exception ex) 
+        { 
+            Console.Error.WriteLine($"Warning: Error loading localized string for key '{key}': {ex.Message}"); 
+            return $"[[ErrorLoadingResource:{key}]]"; 
+        }
+    }
+
+    public static async Task<int> Main(string[] args)
+    {
+        var rootCommand = new RootCommand(GetLocalizedString("CliDescription"));
+        rootCommand.AddCommand(InitCommand.Create());
+        rootCommand.AddCommand(PrepareInputCommand.Create());
+        rootCommand.AddCommand(IntegrateOutputCommand.Create());
+        rootCommand.AddCommand(FetchOutputCommand.Create());
+        rootCommand.AddCommand(StatusCommand.Create());
+        rootCommand.AddCommand(BranchCommand.Create());
+        rootCommand.AddCommand(CheckoutCommand.Create());
+        rootCommand.AddCommand(TaskCommand.Create());
+        rootCommand.AddCommand(ResolveCommand.Create()); 
+        rootCommand.AddCommand(RevertIntegrationCommand.Create()); 
+        rootCommand.AddCommand(SummaryCommand.Create()); 
+
+        var commandLineBuilder = new CommandLineBuilder(rootCommand);
+        commandLineBuilder.UseDefaults();
+        var parser = commandLineBuilder.Build();
+        return await parser.InvokeAsync(args);
+    }
+}
+// --- END CHUNK: Program.cs ---
+
+// --- START CHUNK: Models/AIFlowFile.cs ---
+namespace AIFlow.Cli.Models
+{
+    public class AIFlowFile
+    {
+        public string ProjectName { get; set; } = "MyAIFlowProject";
+        public string CurrentVersion { get; set; } = "0.1.0";
+        public string CurrentBranch { get; set; } = "develop";
+        public int NextTaskId { get; set; } = 1;
+        public int NextHumanRequestGroupId { get; set; } = 101;
+        public AIFlowConfigSettings Config { get; set; } = new();
+        public List<AIFlowTrackedFile> Files { get; set; } = new();
+        public List<AIFlowTask> Tasks { get; set; } = new();
+        public List<object> Roadmap { get; set; } = new();
+        public ActiveRetrievalSession? ActiveAiRetrievalSession { get; set; }
+    }
+
+    public class AIFlowConfigSettings 
+    { 
+        public long MaxRequestPayloadSizeBytes { get; set; } = 500 * 1024; // 500KB
+        public long MaxAiSingleMessageSizeBytes { get; set; } = 500 * 1024; // 500KB
+        public int ApproxMaxAiContextTokens { get; set; } = 8000; 
+    }
+
+    public class AIFlowTrackedFile 
+    { 
+        public string Path { get; set; } = string.Empty; 
+        public string LocalHash { get; set; } = string.Empty; 
+        public string? LastSentToAiHash { get; set; } 
+        public string Status { get; set; } = FileStatus.Unmodified;
+        public string? ConflictResolutionFile { get; set; } 
+    }
+    
+    public static class FileStatus 
+    { 
+        public const string Unmodified = "unmodified"; 
+        public const string ModifiedLocally = "modified_locally"; 
+        public const string AwaitingAiChanges = "awaiting_ai_changes"; 
+        public const string AiModified = "ai_modified"; 
+        public const string NeedsManualMerge = "needs_manual_merge"; 
+        public const string Merged = "merged"; 
+    }
+
+    public class AIFlowTask 
+    { 
+        public string TaskId { get; set; } = string.Empty; 
+        public string Branch { get; set; } = "develop"; 
+        public string Description { get; set; } = string.Empty; 
+        public string Status { get; set; } = TaskStatus.ToDo; 
+        public string AssignedTo { get; set; } = "ai"; 
+        public List<AIFlowTaskRelatedFile> RelatedFiles { get; set; } = new(); 
+        public string? HumanRequestGroupId { get; set; } 
+        public int? HumanRequestTotalParts { get; set; } 
+        public int HumanRequestPartsSent { get; set; } = 0; 
+        public string? HumanNotes { get; set; } 
+        public string? AiNotes { get; set; } 
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow; 
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow; 
+        public string? Type { get; set; } 
+        public int? StoryPoints { get; set; } 
+        public string? Priority { get; set; } 
+        public string? Sprint { get; set; } 
+        public string? EpicLink { get; set; } 
+        public DateTime? DueDate { get; set; } 
+        public List<string> Labels { get; set; } = new(); 
+    } 
+    
+    public static class TaskStatus 
+    { 
+        public const string ToDo = "todo"; 
+        public const string InProgress = "in_progress"; 
+        public const string PendingHumanInput = "pending_human_input"; 
+        public const string PendingHumanInputParts = "pending_human_input_parts"; 
+        public const string PendingAiProcessing = "pending_ai_processing"; 
+        public const string Blocked = "blocked"; 
+        public const string InReview = "in_review"; 
+        public const string PendingHumanReview = "pending_human_review"; 
+        public const string Done = "done"; 
+        public const string Completed = "completed"; 
+        public const string Failed = "failed"; 
+        public const string AwaitingAiBatches = "awaiting_ai_batches"; 
+        public const string Archived = "archived"; 
+    } 
+    
+    public static class TaskType 
+    { 
+        public const string Story = "Story"; 
+        public const string Task = "Task"; 
+        public const string Bug = "Bug"; 
+        public const string Epic = "Epic"; 
+        public const string Spike = "Spike"; 
+    } 
+    
+    public static class TaskPriority 
+    { 
+        public const string Highest = "Highest"; 
+        public const string High = "High"; 
+        public const string Medium = "Medium"; 
+        public const string Low = "Low"; 
+        public const string Lowest = "Lowest"; 
+    } 
+    
+    public class AIFlowTaskRelatedFile 
+    { 
+        public string Path { get; set; } = string.Empty; 
+        public int? SentInPart { get; set; } 
+        public string Action { get; set; } = "update"; 
+        public string? HashAtRequestTime { get; set; } 
+        public string? ContentDetail { get; set; } 
+    } 
+    
+    public class ActiveRetrievalSession 
+    { 
+        public string RetrievalGuid { get; set; } = string.Empty; 
+        public string AiChangesetId { get; set; } = string.Empty; 
+        public int TotalBatches { get; set; } 
+        public int ReceivedBatchesCount { get; set; } 
+        public List<string> ReceivedBatchPayloads { get; set; } = new(); 
+    } 
+}
+// --- END CHUNK: Models/AIFlowFile.cs ---
+
+// --- START CHUNK: Models/BackupInfo.cs ---
+namespace AIFlow.Cli.Models
+{
+    public class BackupInfo
+    {
+        public string BackupId { get; set; } = string.Empty; 
+        public DateTime TimestampUtc { get; set; }
+        public string? RelatedTaskId { get; set; }
+        public string? AiChangesetId { get; set; }
+        public List<string> BackedUpFileRelativePaths { get; set; } = new List<string>();
+        public string Notes { get; set; } = string.Empty;
+    }
+}
+// --- END CHUNK: Models/BackupInfo.cs ---
+
+// --- START CHUNK: Services/AIFlowConfigService.cs ---
+namespace AIFlow.Cli.Services
+{
+    using AIFlow.Cli.Models;
+    using System.Text.Json;
+    using System.IO;
+    using System; // For Path, Directory, File, Exception
+
+    public static class AIFlowConfigService
+    {
+        public static readonly string ConfigFileName = "aiflow.json";
+        private static readonly JsonSerializerOptions JsonOptions = new() 
+        { 
+            WriteIndented = true, 
+            PropertyNameCaseInsensitive = true, 
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull 
+        };
+
+        public static AIFlowFile? LoadConfig(string path = ".")
+        {
+            var configPath = Path.Combine(path, ConfigFileName);
+            if (!File.Exists(configPath))
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorConfigNotFound", ConfigFileName, Path.GetFullPath(path)));
+                return null;
+            }
+            try
+            {
+                var json = File.ReadAllText(configPath);
+                return JsonSerializer.Deserialize<AIFlowFile>(json, JsonOptions);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorParsingConfig", ConfigFileName, ex.Message));
+                return null;
+            }
+        }
+
+        public static bool SaveConfig(AIFlowFile config, string path = ".")
+        {
+            var configPath = Path.Combine(path, ConfigFileName);
+            try
+            {
+                var json = JsonSerializer.Serialize(config, JsonOptions);
+                File.WriteAllText(configPath, json);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorSavingConfig", ConfigFileName, ex.Message));
+                return false;
+            }
+        }
+    }
+}
+// --- END CHUNK: Services/AIFlowConfigService.cs ---
+
+// --- START CHUNK: Services/FileService.cs ---
+namespace AIFlow.Cli.Services
+{
+    using System.Security.Cryptography;
+    using System.Text;
+    using System; // For Path, Directory, File, Exception, BitConverter, Convert, Uri
+    using System.IO;
+
+
+    public static class FileService
+    {
+        public static string? CalculateFileHash(string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                // This message is often suppressed if CalculateFileHash is called speculatively
+                // Console.Error.WriteLine(Program.GetLocalizedString("ErrorFileNotFoundForHash", filePath));
+                return null;
+            }
+            try
+            {
+                using var sha256 = SHA256.Create();
+                using var stream = File.OpenRead(filePath);
+                var hashBytes = sha256.ComputeHash(stream);
+                return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorCalculatingHash", filePath, ex.Message));
+                return null;
+            }
+        }
+
+        public static string Base64Encode(string plainText) => Convert.ToBase64String(Encoding.UTF8.GetBytes(plainText));
+        
+        public static string Base64Decode(string base64EncodedData)
+        {
+            try 
+            {
+                return Encoding.UTF8.GetString(Convert.FromBase64String(base64EncodedData));
+            }
+            catch (FormatException ex)
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorDecodingBase64", ex.Message));
+                return string.Empty; // Or throw, depending on desired handling
+            }
+        }
+
+
+        public static string GetProjectRelativePath(string fullPath)
+        {
+            string currentDirectory = Directory.GetCurrentDirectory();
+            // Ensure currentDirectory ends with a directory separator for correct relative path calculation
+            if (!currentDirectory.EndsWith(Path.DirectorySeparatorChar.ToString()) && !currentDirectory.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
+            {
+                currentDirectory += Path.DirectorySeparatorChar;
+            }
+            Uri projectUri = new Uri(currentDirectory);
+            Uri fileUri = new Uri(Path.GetFullPath(fullPath)); // Ensure fullPath is absolute for robust comparison
+
+            if (projectUri.IsBaseOf(fileUri))
+            {
+                 return Uri.UnescapeDataString(projectUri.MakeRelativeUri(fileUri).ToString().Replace(Path.DirectorySeparatorChar, '/'));
+            }
+            // If not under projectUri, return the original path, normalized
+            return fullPath.Replace(Path.DirectorySeparatorChar, '/');
+        }
+        
+        public static string GetFullPath(string projectRelativePath)
+        {
+            // Assuming projectRelativePath always uses '/' as separator from GetProjectRelativePath
+            return Path.GetFullPath(projectRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        }
+    }
+}
+// --- END CHUNK: Services/FileService.cs ---
+
+// --- START CHUNK: Services/IgnoreService.cs ---
+namespace AIFlow.Cli.Services
+{
+    using Microsoft.Extensions.FileSystemGlobbing;
+    // No using Microsoft.Extensions.FileSystemGlobbing.Abstractions needed if not using DirectoryInfoWrapper directly
+    using System.Collections.Generic; // For List<string>
+    using System.IO; // For Path, File, Directory
+    using System.Linq; // For Linq methods like Select, Where
+    using System; // For StringComparison
+
+    public static class IgnoreService
+    {
+        public const string IgnoreFileName = ".aiflowignore";
+
+        private static readonly List<string> DefaultIgnorePatterns = new List<string>
+        {
+            BackupService.BackupsDirectoryName + "/", 
+            ".git/",
+            ".vs/",
+            ".vscode/",
+            "bin/",
+            "obj/",
+            "**/bin/", // Common build folders deeper in structure
+            "**/obj/",
+            "*.lock",
+            "*.suo",
+            "*.user",
+            AIFlowConfigService.ConfigFileName 
+        };
+
+        public static Matcher LoadIgnoreMatcher(string projectRootPath)
+        {
+            var matcher = new Matcher(StringComparison.OrdinalIgnoreCase); 
+
+            // Add default ignore patterns as exclusions
+            // Note: FileSystemGlobbing doesn't have a concept of "always exclude".
+            // We add them as excludes. If a user wants to include something default-ignored,
+            // they'd need an un-ignore pattern `!` in their .aiflowignore.
+            foreach(var p in DefaultIgnorePatterns) {
+                 matcher.AddExclude(p);
+            }
+
+            var ignoreFilePath = Path.Combine(projectRootPath, IgnoreFileName);
+            if (File.Exists(ignoreFilePath))
+            {
+                var patterns = File.ReadAllLines(ignoreFilePath)
+                    .Select(line => line.Trim())
+                    .Where(line => !string.IsNullOrWhiteSpace(line) && !line.StartsWith("#"))
+                    .ToList();
+                
+                foreach(var pattern in patterns)
+                {
+                    if (pattern.StartsWith("!")) 
+                    {
+                        matcher.AddInclude(pattern.Substring(1));
+                    }
+                    else
+                    {
+                        matcher.AddExclude(pattern);
+                    }
+                }
+            }
+            return matcher;
+        }
+
+        public static bool IsFileIgnored(string relativeFilePath, Matcher matcher)
+        {
+            var normalizedPath = relativeFilePath.Replace(Path.DirectorySeparatorChar, '/');
+            // Match against the root of the matcher context (which is implicitly the project root)
+            var result = matcher.Match(normalizedPath); 
+            return result.HasMatches;
+        }
+
+         public static bool IsFileIgnored(string relativeFilePath, string projectRootPath)
+        {
+            var matcher = LoadIgnoreMatcher(projectRootPath);
+            return IsFileIgnored(relativeFilePath, matcher);
+        }
+    }
+}
+// --- END CHUNK: Services/IgnoreService.cs ---
+
+// --- START CHUNK: Services/BackupService.cs ---
+namespace AIFlow.Cli.Services
+{
+    using AIFlow.Cli.Models;
+    using System.Text.Json;
+    using System; // For Path, Directory, File, Exception
+    using System.IO;
+    using System.Collections.Generic; // For List<T>
+    using System.Linq; // For OrderByDescending
+
+
+    public static class BackupService
+    {
+        public const string BackupsDirectoryName = ".aiflow_backups";
+        private const string BackupInfoFileName = "backup_info.json";
+        private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
+        public static string CreateBackup(AIFlowFile currentConfig, List<string> filesToBackupRelativePaths, string? relatedTaskId, string? aiChangesetId)
+        {
+            var timestamp = DateTime.UtcNow;
+            var backupId = timestamp.ToString("yyyyMMddHHmmssfff");
+            var backupDir = Path.Combine(Directory.GetCurrentDirectory(), BackupsDirectoryName, backupId);
+
+            try
+            {
+                Directory.CreateDirectory(backupDir);
+
+                var currentConfigPath = Path.Combine(Directory.GetCurrentDirectory(), AIFlowConfigService.ConfigFileName);
+                if (File.Exists(currentConfigPath)) // Ensure aiflow.json exists before trying to back it up
+                {
+                     File.Copy(currentConfigPath, Path.Combine(backupDir, AIFlowConfigService.ConfigFileName), true);
+                }
+
+
+                var backedUpFilePathsInBackupDir = new List<string>();
+                foreach (var relativePath in filesToBackupRelativePaths)
+                {
+                    var sourceFullPath = FileService.GetFullPath(relativePath);
+                    if (File.Exists(sourceFullPath))
+                    {
+                        // Ensure relative path for backup storage doesn't start with a leading slash
+                        var cleanRelativePath = relativePath.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        var destPathInBackup = Path.Combine(backupDir, "files", cleanRelativePath); 
+                        Directory.CreateDirectory(Path.GetDirectoryName(destPathInBackup)!);
+                        File.Copy(sourceFullPath, destPathInBackup, true);
+                        backedUpFilePathsInBackupDir.Add(cleanRelativePath);
+                    }
+                }
+
+                var backupInfo = new BackupInfo
+                {
+                    BackupId = backupId,
+                    TimestampUtc = timestamp,
+                    RelatedTaskId = relatedTaskId,
+                    AiChangesetId = aiChangesetId,
+                    BackedUpFileRelativePaths = backedUpFilePathsInBackupDir,
+                    Notes = $"Backup before integrating AI changes for task '{relatedTaskId ?? "N/A"}'."
+                };
+                File.WriteAllText(Path.Combine(backupDir, BackupInfoFileName), JsonSerializer.Serialize(backupInfo, JsonOptions));
+                
+                Console.WriteLine(Program.GetLocalizedString("BackupCreatedSuccessfully", backupId, backupDir));
+                return backupId;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorCreatingBackup", backupId, ex.Message));
+                if (Directory.Exists(backupDir)) try { Directory.Delete(backupDir, true); } catch {}
+                return string.Empty;
+            }
+        }
+
+        public static List<BackupInfo> ListBackups()
+        {
+            var backups = new List<BackupInfo>();
+            var rootBackupDir = Path.Combine(Directory.GetCurrentDirectory(), BackupsDirectoryName);
+            if (!Directory.Exists(rootBackupDir)) return backups;
+
+            foreach (var dir in Directory.GetDirectories(rootBackupDir))
+            {
+                var infoFilePath = Path.Combine(dir, BackupInfoFileName);
+                if (File.Exists(infoFilePath))
+                {
+                    try
+                    {
+                        var info = JsonSerializer.Deserialize<BackupInfo>(File.ReadAllText(infoFilePath), JsonOptions);
+                        if (info != null) backups.Add(info);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(Program.GetLocalizedString("ErrorReadingBackupInfo", Path.GetFileName(dir), ex.Message));
+                    }
+                }
+            }
+            return backups.OrderByDescending(b => b.TimestampUtc).ToList();
+        }
+
+        public static bool RestoreBackup(string backupId)
+        {
+            var backupDir = Path.Combine(Directory.GetCurrentDirectory(), BackupsDirectoryName, backupId);
+            var backupInfoFilePath = Path.Combine(backupDir, BackupInfoFileName);
+
+            if (!Directory.Exists(backupDir) || !File.Exists(backupInfoFilePath))
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorBackupNotFound", backupId));
+                return false;
+            }
+
+            try
+            {
+                var backupInfo = JsonSerializer.Deserialize<BackupInfo>(File.ReadAllText(backupInfoFilePath), JsonOptions);
+                if (backupInfo == null)
+                {
+                    Console.Error.WriteLine(Program.GetLocalizedString("ErrorInvalidBackupInfo", backupId));
+                    return false;
+                }
+
+                var backupConfigPath = Path.Combine(backupDir, AIFlowConfigService.ConfigFileName);
+                var targetConfigPath = Path.Combine(Directory.GetCurrentDirectory(), AIFlowConfigService.ConfigFileName);
+                if (File.Exists(backupConfigPath)) {
+                    File.Copy(backupConfigPath, targetConfigPath, true);
+                    Console.WriteLine(Program.GetLocalizedString("RestoredFile", AIFlowConfigService.ConfigFileName, backupId));
+                } else {
+                     Console.Error.WriteLine(Program.GetLocalizedString("WarningFileNotFoundInBackup", AIFlowConfigService.ConfigFileName, backupId));
+                }
+
+
+                foreach (var relativePath in backupInfo.BackedUpFileRelativePaths)
+                {
+                    var sourcePathInBackup = Path.Combine(backupDir, "files", relativePath);
+                    var targetPathInProject = FileService.GetFullPath(relativePath);
+
+                    if (File.Exists(sourcePathInBackup))
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(targetPathInProject)!);
+                        File.Copy(sourcePathInBackup, targetPathInProject, true);
+                        Console.WriteLine(Program.GetLocalizedString("RestoredFile", relativePath, backupId));
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine(Program.GetLocalizedString("WarningFileNotFoundInBackup", relativePath, backupId));
+                    }
+                }
+                
+                Console.WriteLine(Program.GetLocalizedString("RestoreCompletedSuccessfully", backupId));
+                Console.WriteLine(Program.GetLocalizedString("RestoreNextSteps"));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(Program.GetLocalizedString("ErrorDuringRestore", backupId, ex.Message));
+                return false;
+            }
+        }
+    }
+}
+// --- END CHUNK: Services/BackupService.cs ---
+
+// --- START CHUNK: Services/JsonPayloadModels.cs ---
+namespace AIFlow.Cli.Services.Payloads 
+{
+    using System.Collections.Generic; // For List<T>
+
+    // --- Human Request Payloads ---
+    public class HumanRequestPart 
+    { 
+        public HumanRequestPayload HumanRequest { get; set; } = new(); 
+    }
+    public class HumanRequestPayload 
+    { 
+        public string? HumanRequestGroupId { get; set; } 
+        public int PartNumber { get; set; } 
+        public int TotalParts { get; set; } 
+        public string TaskId { get; set; } = string.Empty; 
+        public string? TaskDescription { get; set; } 
+        public List<HumanRequestFileToProcess>? FilesToProcess { get; set; }  
+        public List<HumanRequestFileData>? FileData { get; set; } 
+        public object? RelevantMetadata { get; set; } 
+    }
+    public class HumanRequestFileToProcess 
+    { 
+        public string Path { get; set; } = string.Empty; 
+        public string Action { get; set; } = string.Empty;  
+        public string? Hash { get; set; } 
+        public string? ContentBase64 { get; set; } 
+        public string? ContentDetail { get; set; } 
+    }
+    public class HumanRequestFileData 
+    { 
+        public string Path { get; set; } = string.Empty; 
+        public string ContentBase64 { get; set; } = string.Empty; 
+    }
+
+    // --- AI Response Payloads ---
+    public class AiPreliminaryResponseWrapper 
+    { 
+        public AiPreliminaryResponse AiPreliminaryResponse { get; set; } = new(); 
+    }
+    public class AiPreliminaryResponse 
+    { 
+        public string AiChangesetId { get; set; } = string.Empty; 
+        public string HumanRequestId { get; set; } = string.Empty;  
+        public string Status { get; set; } = string.Empty;  
+        public long? EstimatedTotalSizeBytes { get; set; } 
+        public int NumberOfBatches { get; set; } 
+        public string RetrievalGuid { get; set; } = string.Empty; 
+        public string? InstructionsForCli { get; set; } 
+    }
+    public class AiOutputPackageWrapper 
+    { 
+        public AiOutputPackage AiOutputPackage { get; set; } = new(); 
+    }
+    public class AiBatchResponseWrapper 
+    { 
+        public AiBatchResponse AiBatchResponse { get; set; } = new(); 
+    }
+    public class AiOutputPackage  
+    { 
+        public string AiChangesetId { get; set; } = string.Empty; 
+        public string HumanRequestId { get; set; } = string.Empty; 
+        public AiTaskUpdate? TaskUpdates { get; set; } 
+        public List<AiFileChange>? FileChanges { get; set; } 
+        public List<string>? RoadmapSuggestions { get; set; } 
+        public string? OverallAiComment { get; set; } 
+        public string? RetrievalGuid { get; set; }  
+        public int? BatchNumber { get; set; } 
+        public int? TotalBatches { get; set; } 
+        public bool? IsLastBatch {get; set;}  
+    }
+    public class AiBatchResponse 
+    { 
+        public string RetrievalGuid { get; set; } = string.Empty; 
+        public string AiChangesetId { get; set; } = string.Empty; 
+        public int BatchNumber { get; set; } 
+        public int TotalBatches { get; set; } 
+        public bool IsLastBatch { get; set; } 
+        public string PayloadType { get; set; } = string.Empty;  
+        public AiOutputPackage Payload { get; set; } = new();  
+    }
+    public class AiTaskUpdate 
+    { 
+        public string TaskId { get; set; } = string.Empty; 
+        public string NewStatus { get; set; } = string.Empty; 
+        public string? AiNotes { get; set; } 
+        public System.DateTime? UpdatedAt { get; set; } // Using System.DateTime for clarity
+    }
+    public class AiFileChange 
+    { 
+        public string Path { get; set; } = string.Empty; 
+        public string Action { get; set; } = string.Empty;  
+        public string? NewHash { get; set; }  
+        public string? BasedOnHash { get; set; }  
+        public string? ContentBase64 { get; set; }  
+        public string? ContentDelivery { get; set; } 
+        public int? TotalContentChunksForFile { get; set; }  
+        public int? ChunkNumberForFile {get; set;} 
+    }
+}
+// --- END CHUNK: Services/JsonPayloadModels.cs ---
+
+// --- START CHUNK: Commands/InitCommand.cs ---
+namespace AIFlow.Cli.Commands 
+{ 
+    using System.CommandLine; 
+    using AIFlow.Cli.Models; 
+    using AIFlow.Cli.Services; 
+    using System.IO; // For Path, Directory, File
+    using System;   // For Exception
+
+    public static class InitCommand 
+    { 
+        public static Command Create() 
+        { 
+            var command = new Command("init", Program.GetLocalizedString("InitCommandDescription")); 
+            command.SetHandler(() => 
+            { 
+                Console.WriteLine(Program.GetLocalizedString("InitializingAIFlowProject")); 
+                var projectRoot = Directory.GetCurrentDirectory(); 
+                var configFilePath = Path.Combine(projectRoot, AIFlowConfigService.ConfigFileName); 
+                if (File.Exists(configFilePath)) 
+                { 
+                    Console.WriteLine(Program.GetLocalizedString("AIFlowProjectAlreadyExists", AIFlowConfigService.ConfigFileName)); 
+                    return; 
+                } 
+                var defaultConfig = new AIFlowFile { ProjectName = Path.GetFileName(projectRoot) ?? "MyAIFlowProject" }; 
+                if (AIFlowConfigService.SaveConfig(defaultConfig, projectRoot)) 
+                { 
+                    Console.WriteLine(Program.GetLocalizedString("AIFlowProjectInitialized", AIFlowConfigService.ConfigFileName)); 
+                    Console.WriteLine(Program.GetLocalizedString("DefaultBranchIsDevelop")); 
+                    var ignoreFilePath = Path.Combine(projectRoot, IgnoreService.IgnoreFileName); 
+                    if (!File.Exists(ignoreFilePath)) 
+                    { 
+                        try 
+                        { 
+                            File.WriteAllText(ignoreFilePath, Program.GetLocalizedString("SampleAIFlowIgnoreContent")); 
+                            Console.WriteLine(Program.GetLocalizedString("SampleAIFlowIgnoreCreated", IgnoreService.IgnoreFileName)); 
+                        } 
+                        catch (Exception ex) 
+                        { 
+                            Console.Error.WriteLine(Program.GetLocalizedString("ErrorCreatingSampleIgnoreFile", IgnoreService.IgnoreFileName, ex.Message)); 
+                        } 
+                    } 
+                } 
+                else 
+                { 
+                    Console.Error.WriteLine(Program.GetLocalizedString("FailedToInitializeAIFlowProject")); 
+                } 
+            }); 
+            return command; 
+        } 
+    } 
+}
+// --- END CHUNK: Commands/InitCommand.cs ---
+
+// --- START CHUNK: Commands/PrepareInputCommand.cs ---
+namespace AIFlow.Cli.Commands 
+{ 
+    /* ... PrepareInput code remains the same as WF005 version ... */ 
+    using System.CommandLine; 
+    using System.CommandLine.Invocation; 
+    using AIFlow.Cli.Models; 
+    using AIFlow.Cli.Services; 
+    using AIFlow.Cli.Services.Payloads; 
+    using System.Text; 
+    using System.Text.Json; 
+    using Microsoft.Extensions.FileSystemGlobbing; 
+    using System.IO; // For File.ReadAllTextAsync
+    using System.Threading.Tasks; // For Task
+    using System.Collections.Generic; // For List
+    using System.Linq; // For FirstOrDefault, Any, etc.
+    using System; // For DateTime, StringComparer, etc.
+
+
+    public static class PrepareInputCommand 
+    { 
+        static Option<string?> taskIdOption = new Option<string?>(aliases: new[] { "--task-id", "-tid" }, description: Program.GetLocalizedString("PrepareInputTaskIdOptionDescription")); 
+        static Option<string?> taskDescOption = new Option<string?>(aliases: new[] { "--task-desc", "-td" }, description: Program.GetLocalizedString("PrepareInputTaskDescOptionDescription")); 
+        static Option<string[]?> filesOption = new Option<string[]?>(aliases: new[] { "--file", "-f" }, description: Program.GetLocalizedString("PrepareInputFileOptionDescription")) { Arity = ArgumentArity.ZeroOrMore }; 
+        static Option<string[]?> newFilesOption = new Option<string[]?>(aliases: new[] { "--new-file", "-nf" }, description: Program.GetLocalizedString("PrepareInputNewFileOptionDescription")) { Arity = ArgumentArity.ZeroOrMore }; 
+        static Option<string?> continueTaskOption = new Option<string?>(aliases: new[] { "--continue-task" }, description: Program.GetLocalizedString("PrepareInputContinueTaskOptionDescription")); 
+        static Option<string?> typeOption = new Option<string?>(aliases: new[] { "--type" }, description: Program.GetLocalizedString("PrepareInputTypeOptionDescription_Optional"), 
+            parseArgument: result => 
+            { 
+                if (!result.Tokens.Any()) return null; // Not provided
+                var typeVal = result.Tokens.Single().Value; 
+                var validTypes = new[] { TaskType.Story, TaskType.Task, TaskType.Bug, TaskType.Epic, TaskType.Spike }; 
+                if (!validTypes.Contains(typeVal, StringComparer.OrdinalIgnoreCase)) 
+                { 
+                    result.ErrorMessage = Program.GetLocalizedString("ErrorInvalidTaskType", typeVal, string.Join(", ", validTypes)); 
+                    return null; 
+                } 
+                return validTypes.First(vt => vt.Equals(typeVal, StringComparer.OrdinalIgnoreCase)); 
+            }); 
+        static Option<int?> storyPointsOption = new Option<int?>(aliases: new[] { "--story-points", "-sp" }, description: Program.GetLocalizedString("PrepareInputStoryPointsOptionDescription")); 
+        static Option<string?> priorityOption = new Option<string?>(aliases: new[] { "--priority", "-p" }, description: Program.GetLocalizedString("PrepareInputPriorityOptionDescription_Optional"), 
+            parseArgument: result => 
+            { 
+                if (!result.Tokens.Any()) return null; // Not provided
+                var prioVal = result.Tokens.Single().Value; 
+                var validPrios = new[] { TaskPriority.Highest, TaskPriority.High, TaskPriority.Medium, TaskPriority.Low, TaskPriority.Lowest }; 
+                if (!validPrios.Contains(prioVal, StringComparer.OrdinalIgnoreCase)) 
+                { 
+                    result.ErrorMessage = Program.GetLocalizedString("ErrorInvalidTaskPriority", prioVal, string.Join(", ", validPrios)); 
+                    return null; 
+                } 
+                return validPrios.First(vp => vp.Equals(prioVal, StringComparer.OrdinalIgnoreCase)); 
+            }); 
+        static Option<string?> sprintOption = new Option<string?>(aliases: new[] { "--sprint" }, description: Program.GetLocalizedString("PrepareInputSprintOptionDescription")); 
+        static Option<string?> epicLinkOption = new Option<string?>(aliases: new[] { "--epic-link" }, description: Program.GetLocalizedString("PrepareInputEpicLinkOptionDescription")); 
+        static Option<DateTime?> dueDateOption = new Option<DateTime?>(aliases: new[] { "--due-date" }, description: Program.GetLocalizedString("PrepareInputDueDateOptionDescription")); 
+        static Option<string[]?> labelsOption = new Option<string[]?>(aliases: new[] { "--labels", "-l" }, description: Program.GetLocalizedString("PrepareInputLabelsOptionDescription")) { Arity = ArgumentArity.ZeroOrMore }; 
+        static Option<string?> assigneeOption = new Option<string?>(aliases: new[] { "--assignee" }, description: Program.GetLocalizedString("PrepareInputAssigneeOptionDescription")); 
+        static Option<string?> branchOption = new Option<string?>(aliases: new[] { "--branch", "-b" }, description: Program.GetLocalizedString("PrepareInputBranchOptionDescription")); 
+        static Option<string?> humanNotesOption = new Option<string?>(aliases: new[] { "--notes", "-n" }, description: Program.GetLocalizedString("PrepareInputHumanNotesOptionDescription")); 
+        public static Command Create() { var command = new Command("prepare-input", Program.GetLocalizedString("PrepareInputCommandDescription")); command.AddOption(taskIdOption); command.AddOption(taskDescOption); command.AddOption(filesOption); command.AddOption(newFilesOption); command.AddOption(continueTaskOption); command.AddOption(typeOption); command.AddOption(storyPointsOption); command.AddOption(priorityOption); command.AddOption(sprintOption); command.AddOption(epicLinkOption); command.AddOption(dueDateOption); command.AddOption(labelsOption); command.AddOption(assigneeOption); command.AddOption(branchOption); command.AddOption(humanNotesOption); command.SetHandler(async (InvocationContext context) => { bool isInteractive = context.ParseResult.CommandResult.Children.Count == 0 || (context.ParseResult.HasOption(taskDescOption) && !context.ParseResult.HasOption(taskIdOption) && !context.ParseResult.HasOption(filesOption) && !context.ParseResult.HasOption(newFilesOption) && !context.ParseResult.HasOption(continueTaskOption)); if (isInteractive && string.IsNullOrEmpty(context.ParseResult.GetValueForOption(continueTaskOption))) { await RunInteractiveMode(context); } else { await HandlePrepareInput(context, false); } }); return command; } 
+        private static async Task RunInteractiveMode(InvocationContext context) { Console.WriteLine(Program.GetLocalizedString("PrepareInputInteractiveModeStart")); var config = AIFlowConfigService.LoadConfig(); if (config == null) return; string? taskId = context.ParseResult.GetValueForOption(taskIdOption); string? taskDesc = context.ParseResult.GetValueForOption(taskDescOption); if (string.IsNullOrEmpty(taskDesc)) taskDesc = Prompt(Program.GetLocalizedString("PromptTaskDesc")); if (string.IsNullOrEmpty(taskDesc)) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorTaskDescRequired")); return; } var files = PromptForMultiple(Program.GetLocalizedString("PromptFilesToInclude"), Program.GetLocalizedString("PromptFileToAddPath")); var newFiles = PromptForMultiple(Program.GetLocalizedString("PromptNewFilesToCreate"), Program.GetLocalizedString("PromptNewFilePath")); Console.WriteLine(Program.GetLocalizedString("PromptAgileDataOptional")); string? type = PromptOptional(Program.GetLocalizedString("PromptTaskType", string.Join(", ", TaskType.Story, TaskType.Task, TaskType.Bug, TaskType.Epic, TaskType.Spike))); int? storyPoints = PromptOptionalInt(Program.GetLocalizedString("PromptStoryPoints")); string? priority = PromptOptional(Program.GetLocalizedString("PromptTaskPriority", string.Join(", ", TaskPriority.Highest, TaskPriority.High, TaskPriority.Medium, TaskPriority.Low, TaskPriority.Lowest))); string? sprint = PromptOptional(Program.GetLocalizedString("PromptSprint")); string? epicLink = PromptOptional(Program.GetLocalizedString("PromptEpicLink")); DateTime? dueDate = PromptOptionalDate(Program.GetLocalizedString("PromptDueDate")); var labels = PromptForMultiple(Program.GetLocalizedString("PromptLabels"), Program.GetLocalizedString("PromptLabelToAdd")); string? assignee = PromptOptional(Program.GetLocalizedString("PromptAssignee"), "ai"); string? branch = PromptOptional(Program.GetLocalizedString("PromptBranch"), config.CurrentBranch); string? humanNotes = PromptOptional(Program.GetLocalizedString("PromptHumanNotes")); await HandlePrepareInputLogic( taskId, taskDesc, files?.ToArray(), newFiles?.ToArray(), null, type, storyPoints, priority, sprint, epicLink, dueDate, labels?.ToArray(), assignee, branch, humanNotes, context ); } 
+        private static string? Prompt(string message, string? defaultValue = null) { Console.Write($"{message}{(defaultValue == null ? "" : $" [{defaultValue}]")}: "); var input = Console.ReadLine(); return string.IsNullOrWhiteSpace(input) ? defaultValue : input.Trim(); } 
+        private static string? PromptOptional(string message, string? defaultValue = null) { var input = Prompt($"{message} (optional, press Enter to skip{(defaultValue == null ? "" : $" or use default '{defaultValue}'")})", defaultValue); return string.IsNullOrWhiteSpace(input) ? defaultValue : (input == defaultValue && string.IsNullOrWhiteSpace(Console.ReadLine()?.Trim()) ? defaultValue : input); } 
+        private static int? PromptOptionalInt(string message) { var input = PromptOptional(message); return int.TryParse(input, out int val) ? val : null; } 
+        private static DateTime? PromptOptionalDate(string message) { var input = PromptOptional(message + " (YYYY-MM-DD)"); return DateTime.TryParse(input, out DateTime val) ? val : null; } 
+        private static List<string>? PromptForMultiple(string initialMessage, string subsequentPrompt) { Console.WriteLine(initialMessage + Program.GetLocalizedString("PromptMultipleEndWithEmpty")); var items = new List<string>(); while(true) { Console.Write($"{subsequentPrompt}: "); var item = Console.ReadLine()?.Trim(); if (string.IsNullOrWhiteSpace(item)) break; items.Add(item); } return items.Any() ? items : null; } 
+        private static async Task HandlePrepareInputLogic( string? taskId, string? taskDesc, string[]? files, string[]? newFiles, string? continueTask, string? taskType, int? storyPoints, string? priority, string? sprint, string? epicLink, DateTime? dueDate, string[]? labels, string? assignee, string? branch, string? humanNotes, InvocationContext? cliContext = null ) { var config = AIFlowConfigService.LoadConfig(); if (config == null) return; var projectRoot = Directory.GetCurrentDirectory(); Matcher ignoreMatcher = IgnoreService.LoadIgnoreMatcher(projectRoot); AIFlowTask? taskToProcess; bool isNewTask = false; bool isContinuingSplitRequest = !string.IsNullOrEmpty(continueTask); if (isContinuingSplitRequest) { taskToProcess = config.Tasks.FirstOrDefault(t => t.TaskId == continueTask); if (taskToProcess == null) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorTaskNotFoundForContinue", continueTask!)); return; } if (taskToProcess.Status != TaskStatus.PendingHumanInputParts || taskToProcess.HumanRequestGroupId == null || taskToProcess.HumanRequestTotalParts == null || taskToProcess.HumanRequestPartsSent >= taskToProcess.HumanRequestTotalParts) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorInvalidTaskStateForContinue", continueTask!)); return; } Console.WriteLine(Program.GetLocalizedString("ContinuingSplitRequest", taskToProcess.TaskId, taskToProcess.HumanRequestPartsSent + 1, taskToProcess.HumanRequestTotalParts!)); } else { if (string.IsNullOrEmpty(taskId) && string.IsNullOrEmpty(taskDesc)) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorTaskDescOrIdRequired")); return; } taskToProcess = config.Tasks.FirstOrDefault(t => t.TaskId == taskId); if (taskToProcess == null) { isNewTask = true; if (string.IsNullOrEmpty(taskDesc)) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorTaskDescRequiredForNewTask")); return; } taskToProcess = new AIFlowTask { TaskId = taskId ?? $"task_{config.NextTaskId++}", Description = taskDesc!, Branch = branch ?? config.CurrentBranch, Status = TaskStatus.ToDo, CreatedAt = DateTime.UtcNow, Type = taskType, StoryPoints = storyPoints, Priority = priority, Sprint = sprint, EpicLink = epicLink, DueDate = dueDate, Labels = labels?.ToList() ?? new List<string>(), AssignedTo = assignee ?? "ai", HumanNotes = humanNotes }; config.Tasks.Add(taskToProcess); } else { if (!string.IsNullOrEmpty(taskDesc)) taskToProcess.Description = taskDesc; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.branchOption) == true || (cliContext == null && branch != null)) taskToProcess.Branch = branch ?? taskToProcess.Branch; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.typeOption) == true || (cliContext == null && taskType != null)) taskToProcess.Type = taskType; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.typeOption) != true) taskToProcess.Type = null; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.storyPointsOption) == true || (cliContext == null && storyPoints.HasValue)) taskToProcess.StoryPoints = storyPoints; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.storyPointsOption) != true) taskToProcess.StoryPoints = null; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.priorityOption) == true || (cliContext == null && priority != null)) taskToProcess.Priority = priority; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.priorityOption) != true) taskToProcess.Priority = null; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.sprintOption) == true || (cliContext == null && sprint != null)) taskToProcess.Sprint = sprint; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.sprintOption) != true) taskToProcess.Sprint = null; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.epicLinkOption) == true || (cliContext == null && epicLink != null)) taskToProcess.EpicLink = epicLink; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.epicLinkOption) != true) taskToProcess.EpicLink = null; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.dueDateOption) == true || (cliContext == null && dueDate.HasValue)) taskToProcess.DueDate = dueDate; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.dueDateOption) != true) taskToProcess.DueDate = null; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.labelsOption) == true || (cliContext == null && labels != null)) taskToProcess.Labels = labels?.ToList() ?? taskToProcess.Labels; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.labelsOption) != true) taskToProcess.Labels = new List<string>(); if (cliContext?.ParseResult.HasOption(PrepareInputCommand.assigneeOption) == true || (cliContext == null && assignee != null)) taskToProcess.AssignedTo = assignee ?? taskToProcess.AssignedTo; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.assigneeOption) != true) taskToProcess.AssignedTo = "ai"; if (cliContext?.ParseResult.HasOption(PrepareInputCommand.humanNotesOption) == true || (cliContext == null && humanNotes != null)) taskToProcess.HumanNotes = humanNotes; else if (isNewTask && cliContext?.ParseResult.HasOption(PrepareInputCommand.humanNotesOption) != true) taskToProcess.HumanNotes = null; } taskToProcess.RelatedFiles.Clear(); } taskToProcess.UpdatedAt = DateTime.UtcNow; var humanRequestPayload = new HumanRequestPayload { TaskId = taskToProcess.TaskId, TaskDescription = taskToProcess.Description, HumanRequestGroupId = taskToProcess.HumanRequestGroupId, FilesToProcess = new List<HumanRequestFileToProcess>(), FileData = new List<HumanRequestFileData>()}; long currentPayloadSize = 0; var allFilesForTask = new List<(string path, string action, string? hashAtRequestTime, string? content)>(); if (files != null) { foreach (var filePathInput in files) { var fullPath = FileService.GetFullPath(filePathInput); var projectRelPath = FileService.GetProjectRelativePath(fullPath); if (IgnoreService.IsFileIgnored(projectRelPath, ignoreMatcher)) { Console.ForegroundColor = ConsoleColor.Yellow; Console.WriteLine(Program.GetLocalizedString("WarningFileIgnored", projectRelPath, IgnoreService.IgnoreFileName)); Console.ResetColor(); continue; } if (!File.Exists(fullPath)) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorFileNotFound", projectRelPath)); continue; } var hash = FileService.CalculateFileHash(fullPath); if (hash == null) continue; string? content = null; if(!isContinuingSplitRequest || taskToProcess.RelatedFiles.Any(rf => rf.Path == projectRelPath && rf.ContentDetail != null && rf.SentInPart == null)) { content = await File.ReadAllTextAsync(fullPath); } allFilesForTask.Add((projectRelPath, "update", hash, content)); } } if (newFiles != null) { foreach (var filePathInput in newFiles) { var projectRelPath = FileService.GetProjectRelativePath(FileService.GetFullPath(filePathInput)); if (IgnoreService.IsFileIgnored(projectRelPath, ignoreMatcher)) { Console.ForegroundColor = ConsoleColor.Yellow; Console.WriteLine(Program.GetLocalizedString("WarningNewFileIgnored", projectRelPath, IgnoreService.IgnoreFileName)); Console.ResetColor(); continue; } allFilesForTask.Add((projectRelPath, "create", null, null));} } int currentPartNumber = isContinuingSplitRequest ? taskToProcess.HumanRequestPartsSent + 1 : 1; bool needsSplitting = false; long tempPayloadSizeEstimate = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(humanRequestPayload)).Length; if (!isContinuingSplitRequest) { taskToProcess.RelatedFiles.Clear(); foreach (var (path, fileAction, fileHash, fileContent) in allFilesForTask) { var relatedFileEntry = new AIFlowTaskRelatedFile { Path = path, Action = fileAction, HashAtRequestTime = fileHash }; taskToProcess.RelatedFiles.Add(relatedFileEntry); tempPayloadSizeEstimate += Encoding.UTF8.GetBytes(path).Length + (fileContent != null ? Encoding.UTF8.GetBytes(FileService.Base64Encode(fileContent)).Length : 0) + 100; } if (tempPayloadSizeEstimate > config.Config.MaxRequestPayloadSizeBytes) { needsSplitting = true; taskToProcess.HumanRequestGroupId ??= $"hrg_{config.NextHumanRequestGroupId++}"; taskToProcess.Status = TaskStatus.PendingHumanInputParts; Console.WriteLine(Program.GetLocalizedString("InfoRequestWillBeSplit", taskToProcess.HumanRequestGroupId)); } humanRequestPayload.HumanRequestGroupId = taskToProcess.HumanRequestGroupId; } humanRequestPayload.PartNumber = currentPartNumber; if (currentPartNumber == 1) { humanRequestPayload.TaskDescription = taskToProcess.Description; foreach (var relatedFile in taskToProcess.RelatedFiles) { var fileData = allFilesForTask.FirstOrDefault(f => f.path == relatedFile.Path); var reqFile = new HumanRequestFileToProcess { Path = relatedFile.Path, Action = relatedFile.Action, Hash = relatedFile.HashAtRequestTime }; if (fileData.content != null) { string encodedContent = FileService.Base64Encode(fileData.content); long fileSizeEstimate = Encoding.UTF8.GetBytes(reqFile.Path).Length + Encoding.UTF8.GetBytes(encodedContent).Length + 100; if (currentPayloadSize + fileSizeEstimate < config.Config.MaxRequestPayloadSizeBytes * 0.9) { reqFile.ContentBase64 = encodedContent; currentPayloadSize += fileSizeEstimate; relatedFile.SentInPart = 1; } else { reqFile.ContentDetail = "provided_in_next_part"; needsSplitting = true; relatedFile.ContentDetail = reqFile.ContentDetail; } } humanRequestPayload.FilesToProcess!.Add(reqFile); } } else { var filesToSendInThisPart = taskToProcess.RelatedFiles.Where(rf => rf.SentInPart == null && rf.ContentDetail != null).ToList(); foreach (var relatedFile in filesToSendInThisPart) { var fileData = allFilesForTask.FirstOrDefault(f => f.path == relatedFile.Path); if (fileData.content == null) continue; string encodedContent = FileService.Base64Encode(fileData.content); long fileSizeEstimate = Encoding.UTF8.GetBytes(relatedFile.Path).Length + Encoding.UTF8.GetBytes(encodedContent).Length + 50; if (currentPayloadSize + fileSizeEstimate < config.Config.MaxRequestPayloadSizeBytes * 0.95) { humanRequestPayload.FileData!.Add(new HumanRequestFileData { Path = relatedFile.Path, ContentBase64 = encodedContent }); currentPayloadSize += fileSizeEstimate; relatedFile.SentInPart = currentPartNumber; } else { break; } } } if (needsSplitting || taskToProcess.HumanRequestGroupId != null) { taskToProcess.HumanRequestGroupId ??= $"hrg_{config.NextHumanRequestGroupId++}"; humanRequestPayload.HumanRequestGroupId = taskToProcess.HumanRequestGroupId; bool moreFilesToSend = taskToProcess.RelatedFiles.Any(rf => rf.SentInPart == null && (rf.ContentDetail != null || allFilesForTask.FirstOrDefault(f=>f.path == rf.Path).content != null)); if (currentPartNumber == 1 && !moreFilesToSend && (humanRequestPayload.FileData == null || humanRequestPayload.FileData.Count == 0) ) { humanRequestPayload.TotalParts = 1; taskToProcess.HumanRequestTotalParts = 1; taskToProcess.Status = TaskStatus.PendingAiProcessing; } else if (moreFilesToSend) { humanRequestPayload.TotalParts = currentPartNumber + 1; taskToProcess.HumanRequestTotalParts = currentPartNumber + 1; taskToProcess.Status = TaskStatus.PendingHumanInputParts; } else { humanRequestPayload.TotalParts = currentPartNumber; taskToProcess.HumanRequestTotalParts = currentPartNumber; taskToProcess.Status = TaskStatus.PendingAiProcessing; } } else { humanRequestPayload.TotalParts = 1; taskToProcess.Status = TaskStatus.PendingAiProcessing; } taskToProcess.HumanRequestPartsSent = currentPartNumber; foreach (var relatedFile in taskToProcess.RelatedFiles.Where(rf=>rf.SentInPart == currentPartNumber || (currentPartNumber == 1 && rf.SentInPart == null && rf.ContentDetail == null))) { var trackedFile = config.Files.FirstOrDefault(f => f.Path == relatedFile.Path); if (trackedFile == null) { trackedFile = new AIFlowTrackedFile { Path = relatedFile.Path }; config.Files.Add(trackedFile); } if (relatedFile.Action == "update" && relatedFile.HashAtRequestTime != null) { trackedFile.LastSentToAiHash = relatedFile.HashAtRequestTime; } trackedFile.Status = FileStatus.AwaitingAiChanges; } int estimatedTokens = EstimateTokens(humanRequestPayload); if (estimatedTokens > config.Config.ApproxMaxAiContextTokens) { Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine(Program.GetLocalizedString("WarningTokenEstimateExceedsLimit", estimatedTokens, config.Config.ApproxMaxAiContextTokens, taskToProcess.TaskId, humanRequestPayload.PartNumber)); Console.ResetColor(); } else { Console.WriteLine(Program.GetLocalizedString("InfoTokenEstimate", estimatedTokens, humanRequestPayload.PartNumber)); } if (!isContinuingSplitRequest) { AIFlowConfigService.SaveConfig(config); } else if (taskToProcess.Status == TaskStatus.PendingAiProcessing) { AIFlowConfigService.SaveConfig(config); } var finalPayload = new HumanRequestPart { HumanRequest = humanRequestPayload }; var jsonOutput = JsonSerializer.Serialize(finalPayload, new JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull }); Console.WriteLine(Program.GetLocalizedString("RequestPackageReady")); Console.WriteLine("--------------------------------------------------"); Console.WriteLine(jsonOutput); Console.WriteLine("--------------------------------------------------"); if (taskToProcess.Status == TaskStatus.PendingHumanInputParts && taskToProcess.HumanRequestTotalParts > taskToProcess.HumanRequestPartsSent) { Console.WriteLine(Program.GetLocalizedString("InstructionForNextPart", taskToProcess.TaskId)); } else if (taskToProcess.Status == TaskStatus.PendingAiProcessing) { Console.WriteLine(Program.GetLocalizedString("AllPartsSentAwaitingAI", taskToProcess.TaskId)); } } 
+        private static int EstimateTokens(HumanRequestPayload payload) { const int charsPerToken = 4; int totalChars = 0; if (!string.IsNullOrEmpty(payload.TaskDescription)) { totalChars += payload.TaskDescription.Length; } if (payload.FilesToProcess != null) { foreach (var fileToProcess in payload.FilesToProcess) { if (!string.IsNullOrEmpty(fileToProcess.ContentBase64)) { try { string decodedContent = FileService.Base64Decode(fileToProcess.ContentBase64); totalChars += decodedContent.Length; } catch {} } } } if (payload.FileData != null) { foreach (var fileData in payload.FileData) { if (!string.IsNullOrEmpty(fileData.ContentBase64)) { try { string decodedContent = FileService.Base64Decode(fileData.ContentBase64); totalChars += decodedContent.Length; } catch {} } } } totalChars += 500; return totalChars / charsPerToken; } 
+        private static async Task HandlePrepareInput(InvocationContext context, bool isInteractiveContext = true) { await HandlePrepareInputLogic( context.ParseResult.GetValueForOption(taskIdOption), context.ParseResult.GetValueForOption(taskDescOption), context.ParseResult.GetValueForOption(filesOption), context.ParseResult.GetValueForOption(newFilesOption), context.ParseResult.GetValueForOption(continueTaskOption), context.ParseResult.GetValueForOption(typeOption), context.ParseResult.GetValueForOption(storyPointsOption), context.ParseResult.GetValueForOption(priorityOption), context.ParseResult.GetValueForOption(sprintOption), context.ParseResult.GetValueForOption(epicLinkOption), context.ParseResult.GetValueForOption(dueDateOption), context.ParseResult.GetValueForOption(labelsOption), context.ParseResult.GetValueForOption(assigneeOption), context.ParseResult.GetValueForOption(branchOption), context.ParseResult.GetValueForOption(humanNotesOption), context ); } 
+    } 
+}
+// --- END CHUNK: Commands/PrepareInputCommand.cs ---
+
+// --- START CHUNK: Commands/IntegrateOutputCommand.cs ---
+namespace AIFlow.Cli.Commands { /* ... IntegrateOutput code remains the same as SV003 version ... */ using System.CommandLine; using System.CommandLine.Invocation; using AIFlow.Cli.Models; using AIFlow.Cli.Services; using AIFlow.Cli.Services.Payloads; using System.Text.Json; using System.Text; using System.IO; using System.Collections.Generic; using System.Linq; using System; public static class IntegrateOutputCommand { static Argument<string> aiJsonPayloadArgument = new Argument<string>("ai-json-payload", Program.GetLocalizedString("IntegrateOutputPayloadArgumentDescription")); static Option<bool> dryRunOption = new Option<bool>(aliases: new[] { "--dry-run", "-dr" }, description: Program.GetLocalizedString("DryRunOptionDescription")); public static Command Create() { var command = new Command("integrate-output", Program.GetLocalizedString("IntegrateOutputCommandDescription")); command.AddArgument(aiJsonPayloadArgument); command.AddOption(dryRunOption); command.SetHandler((InvocationContext context) => { var aiJsonPayload = context.ParseResult.GetValueForArgument(aiJsonPayloadArgument); var isDryRun = context.ParseResult.GetValueForOption(dryRunOption); HandleIntegrateOutput(aiJsonPayload, isDryRun); }); return command; } private static void HandleIntegrateOutput(string aiJsonPayload, bool isDryRun) { if (isDryRun) { Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine(Program.GetLocalizedString("DryRunModeActive")); Console.ResetColor(); } var config = AIFlowConfigService.LoadConfig(); if (config == null) return; AIFlowFile configForSimulation = isDryRun ? JsonSerializer.Deserialize<AIFlowFile>(JsonSerializer.Serialize(config))! : config; AiPreliminaryResponse? prelimResponse = null; AiOutputPackage? mainOutputPackage = null; AiBatchResponse? batchResponse = null; bool changesWouldBeAppliedOrMergeFileCreated = false; bool successfullyParsed = false; try { var prelimWrapper = JsonSerializer.Deserialize<AiPreliminaryResponseWrapper>(aiJsonPayload, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); if (prelimWrapper?.AiPreliminaryResponse?.RetrievalGuid != null) { prelimResponse = prelimWrapper.AiPreliminaryResponse; successfullyParsed = true; } } catch {} if (!successfullyParsed) { try { var batchWrapper = JsonSerializer.Deserialize<AiBatchResponseWrapper>(aiJsonPayload, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); if(batchWrapper?.AiBatchResponse?.RetrievalGuid != null && batchWrapper.AiBatchResponse.Payload != null) { batchResponse = batchWrapper.AiBatchResponse; mainOutputPackage = batchResponse.Payload; mainOutputPackage.RetrievalGuid = batchResponse.RetrievalGuid; mainOutputPackage.BatchNumber = batchResponse.BatchNumber; mainOutputPackage.TotalBatches = batchResponse.TotalBatches; mainOutputPackage.IsLastBatch = batchResponse.IsLastBatch; successfullyParsed = true; }} catch {}} if (!successfullyParsed) { try { var directWrapper = JsonSerializer.Deserialize<AiOutputPackageWrapper>(aiJsonPayload, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); if(directWrapper?.AiOutputPackage?.AiChangesetId != null) { mainOutputPackage = directWrapper.AiOutputPackage; successfullyParsed = true; } else { mainOutputPackage = JsonSerializer.Deserialize<AiOutputPackage>(aiJsonPayload, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); if(mainOutputPackage?.AiChangesetId != null) successfullyParsed = true; }} catch {} } if (!successfullyParsed) { try { using JsonDocument doc = JsonDocument.Parse(aiJsonPayload); JsonElement root = doc.RootElement; bool hasAiChangesetId = root.TryGetProperty("aiChangesetId", out _) || (root.TryGetProperty("aiOutputPackage", out var pkg) && pkg.TryGetProperty("aiChangesetId", out _)) || (root.TryGetProperty("aiBatchResponse", out var batch) && batch.TryGetProperty("aiChangesetId", out _)) || (root.TryGetProperty("aiPreliminaryResponse", out var prelim) && prelim.TryGetProperty("aiChangesetId", out _)); bool hasFileChanges = root.TryGetProperty("fileChanges", out JsonElement fc) && fc.ValueKind == JsonValueKind.Array || (root.TryGetProperty("aiOutputPackage", out pkg) && pkg.TryGetProperty("fileChanges", out fc) && fc.ValueKind == JsonValueKind.Array) || (root.TryGetProperty("aiBatchResponse", out batch) && batch.TryGetProperty("payload", out var batchPayload) && batchPayload.TryGetProperty("fileChanges", out fc) && fc.ValueKind == JsonValueKind.Array); if (hasAiChangesetId || hasFileChanges) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorAIJsonValidButUnrecognizedStructure")); } else { Console.Error.WriteLine(Program.GetLocalizedString("ErrorAIJsonValidButNotAIFlowFormat")); } } catch (JsonException jsonEx) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorAIJsonMalformed", jsonEx.Message)); } return; } if (prelimResponse != null) { Console.WriteLine(Program.GetLocalizedString("AIOutputIsBatched", prelimResponse.NumberOfBatches, prelimResponse.RetrievalGuid)); if (!isDryRun) { configForSimulation.ActiveAiRetrievalSession = new ActiveRetrievalSession { RetrievalGuid = prelimResponse.RetrievalGuid, AiChangesetId = prelimResponse.AiChangesetId, TotalBatches = prelimResponse.NumberOfBatches, ReceivedBatchesCount = 0, ReceivedBatchPayloads = new List<string>() }; AIFlowConfigService.SaveConfig(configForSimulation); } else { Console.WriteLine(Program.GetLocalizedString("DryRunWouldUpdateActiveSession")); } Console.WriteLine(Program.GetLocalizedString("RunFetchOutputCommand", prelimResponse.RetrievalGuid, 1)); return; } if (mainOutputPackage == null) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorInvalidAIJsonStructure")); return; } AIFlowTask? task = null; if (mainOutputPackage.TaskUpdates?.TaskId != null) { task = configForSimulation.Tasks.FirstOrDefault(t => t.TaskId == mainOutputPackage.TaskUpdates.TaskId); } else if (!string.IsNullOrEmpty(mainOutputPackage.HumanRequestId)) { task = configForSimulation.Tasks.FirstOrDefault(t => t.TaskId == mainOutputPackage.HumanRequestId || t.HumanRequestGroupId == mainOutputPackage.HumanRequestId); } if (task == null && configForSimulation.ActiveAiRetrievalSession?.RetrievalGuid != mainOutputPackage.RetrievalGuid) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorTaskNotFoundForAIResponse", mainOutputPackage.TaskUpdates?.TaskId ?? mainOutputPackage.HumanRequestId ?? "N/A")); return; } if (mainOutputPackage.RetrievalGuid != null && configForSimulation.ActiveAiRetrievalSession?.RetrievalGuid == mainOutputPackage.RetrievalGuid) { var session = configForSimulation.ActiveAiRetrievalSession; if(!isDryRun) session.ReceivedBatchPayloads.Add(aiJsonPayload); session.ReceivedBatchesCount++; Console.WriteLine(Program.GetLocalizedString("BatchReceived", session.ReceivedBatchesCount, session.TotalBatches, session.RetrievalGuid)); if (session.ReceivedBatchesCount < session.TotalBatches) { if(!isDryRun) AIFlowConfigService.SaveConfig(configForSimulation); else Console.WriteLine(Program.GetLocalizedString("DryRunWouldSaveConfigForBatch")); Console.WriteLine(Program.GetLocalizedString("RunFetchOutputCommand", session.RetrievalGuid, session.ReceivedBatchesCount + 1)); return; } else { Console.WriteLine(Program.GetLocalizedString("AllBatchesReceivedProcessing", session.RetrievalGuid)); var consolidatedFileChanges = new List<AiFileChange>(); AiTaskUpdate? finalTaskUpdate = null; var payloadsToProcess = isDryRun ? new List<string>{ aiJsonPayload } : session.ReceivedBatchPayloads; foreach(var batchJson in payloadsToProcess) { var storedBatchWrapper = JsonSerializer.Deserialize<AiBatchResponseWrapper>(batchJson, new JsonSerializerOptions{PropertyNameCaseInsensitive = true}); var storedBatchPayload = storedBatchWrapper?.AiBatchResponse?.Payload; if (storedBatchPayload?.FileChanges != null) consolidatedFileChanges.AddRange(storedBatchPayload.FileChanges); if (storedBatchPayload?.TaskUpdates != null) finalTaskUpdate = storedBatchPayload.TaskUpdates; } mainOutputPackage.FileChanges = consolidatedFileChanges.DistinctBy(fc => fc.Path).ToList(); mainOutputPackage.TaskUpdates = finalTaskUpdate ?? mainOutputPackage.TaskUpdates; if(!isDryRun) configForSimulation.ActiveAiRetrievalSession = null; else Console.WriteLine(Program.GetLocalizedString("DryRunWouldClearActiveSession")); } } string? backupId = null; if (!isDryRun && mainOutputPackage.FileChanges != null && mainOutputPackage.FileChanges.Any()) { var filesToBackup = new List<string>(); foreach (var change in mainOutputPackage.FileChanges) { if (change.Action.Equals("update", StringComparison.OrdinalIgnoreCase) || change.Action.Equals("delete", StringComparison.OrdinalIgnoreCase)) { var fullPath = FileService.GetFullPath(change.Path); if (File.Exists(fullPath)) { filesToBackup.Add(change.Path); } } } if (filesToBackup.Any() || true) { backupId = BackupService.CreateBackup(config, filesToBackup, task?.TaskId, mainOutputPackage.AiChangesetId); if (string.IsNullOrEmpty(backupId)) { Console.Error.WriteLine(Program.GetLocalizedString("BackupFailedProceedWithCaution")); Console.Write(Program.GetLocalizedString("PromptProceedWithoutBackup")); if(Console.ReadLine()?.Trim().ToLowerInvariant() != "y") { Console.WriteLine(Program.GetLocalizedString("IntegrationAborted")); return; } } } } else if (isDryRun && mainOutputPackage.FileChanges != null && mainOutputPackage.FileChanges.Any()) { Console.WriteLine(Program.GetLocalizedString("DryRunWouldCreateBackup")); } bool anyFileSkippedOrMerged = false; if (mainOutputPackage.FileChanges != null) { foreach (var change in mainOutputPackage.FileChanges) { var fullPath = FileService.GetFullPath(change.Path); var trackedFile = configForSimulation.Files.FirstOrDefault(f => f.Path == change.Path); if (change.Action.Equals("delete", StringComparison.OrdinalIgnoreCase)) { if (isDryRun) { Console.WriteLine(Program.GetLocalizedString("DryRunWouldDeleteFile", change.Path)); } else { if (File.Exists(fullPath)) { File.Delete(fullPath); Console.WriteLine(Program.GetLocalizedString("FileDeleted", change.Path));} if (trackedFile != null) configForSimulation.Files.Remove(trackedFile); } changesWouldBeAppliedOrMergeFileCreated = true; continue; } if (string.IsNullOrEmpty(change.ContentBase64)) { Console.WriteLine(Program.GetLocalizedString("SkippingFileNoContent", change.Path)); continue; } string aiFileContent = FileService.Base64Decode(change.ContentBase64); if (trackedFile == null) { trackedFile = new AIFlowTrackedFile { Path = change.Path }; if(!isDryRun) configForSimulation.Files.Add(trackedFile); else Console.WriteLine(Program.GetLocalizedString("DryRunWouldAddTrackedFile", change.Path));} bool applyAIChangesDirectly = true; if (change.Action.Equals("update", StringComparison.OrdinalIgnoreCase)) { string? currentLocalDiskContent = null; string? currentLocalDiskHash = null; if (File.Exists(fullPath)) { try { currentLocalDiskContent = File.ReadAllText(fullPath); } catch {} currentLocalDiskHash = FileService.CalculateFileHash(fullPath); } if (trackedFile.LastSentToAiHash != null && currentLocalDiskHash != null && currentLocalDiskHash != trackedFile.LastSentToAiHash) { Console.ForegroundColor = ConsoleColor.Yellow; Console.WriteLine(Program.GetLocalizedString("ConflictFileChangedLocallyDetailed", change.Path, currentLocalDiskHash.Substring(0, Math.Min(currentLocalDiskHash.Length, 7)), trackedFile.LastSentToAiHash.Substring(0, Math.Min(trackedFile.LastSentToAiHash.Length, 7)), change.BasedOnHash?.Substring(0, Math.Min(change.BasedOnHash.Length, 7)) ?? "N/A" )); Console.ResetColor(); if (isDryRun) { Console.WriteLine(Program.GetLocalizedString("DryRunWouldPromptConflict", change.Path)); Console.WriteLine(Program.GetLocalizedString("DryRunSimulatingOverwrite", change.Path)); } else { string? choice = null; while (choice != "o" && choice != "s" && choice != "m") { Console.Write(Program.GetLocalizedString("PromptOverwriteSkipMerge", change.Path)); choice = Console.ReadLine()?.Trim().ToLowerInvariant(); } if (choice == "s") { applyAIChangesDirectly = false; trackedFile.Status = FileStatus.NeedsManualMerge; Console.WriteLine(Program.GetLocalizedString("SkippingAIChangesForFile", change.Path, trackedFile.Status)); anyFileSkippedOrMerged = true; } else if (choice == "m") { applyAIChangesDirectly = false; anyFileSkippedOrMerged = true; try { var conflictContent = new StringBuilder(); conflictContent.AppendLine($"<<<<<<< Current Local Changes"); conflictContent.AppendLine(currentLocalDiskContent ?? string.Empty); conflictContent.AppendLine($"======="); conflictContent.AppendLine(aiFileContent); conflictContent.AppendLine($">>>>>>> AI's Change (Task: {task?.TaskId ?? "N/A"} / AIFlow)"); Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!); File.WriteAllText(fullPath, conflictContent.ToString()); trackedFile.Status = FileStatus.NeedsManualMerge; trackedFile.ConflictResolutionFile = null; Console.WriteLine(Program.GetLocalizedString("MergeMarkersWrittenToOriginalFile", change.Path)); Console.WriteLine(Program.GetLocalizedString("ResolveOriginalFileInstruction", change.Path)); } catch (Exception ex) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorWritingMergeMarkers", change.Path, ex.Message)); trackedFile.Status = FileStatus.NeedsManualMerge; } } } } else if (trackedFile.LastSentToAiHash != null && change.BasedOnHash != null && trackedFile.LastSentToAiHash != change.BasedOnHash) { Console.ForegroundColor = ConsoleColor.DarkYellow; Console.WriteLine(Program.GetLocalizedString("WarningAIUsedStaleVersion", change.Path, change.BasedOnHash, trackedFile.LastSentToAiHash)); Console.ResetColor(); } } if (applyAIChangesDirectly) { if(isDryRun) { Console.WriteLine(Program.GetLocalizedString(change.Action.Equals("create", StringComparison.OrdinalIgnoreCase) ? "DryRunWouldCreateFile" : "DryRunWouldUpdateFile", change.Path)); if (trackedFile != null) { trackedFile.Status = FileStatus.AiModified; } } else { try { Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!); File.WriteAllText(fullPath, aiFileContent); Console.WriteLine(Program.GetLocalizedString(change.Action.Equals("create", StringComparison.OrdinalIgnoreCase) ? "FileCreated" : "FileUpdated", change.Path)); trackedFile.LocalHash = FileService.CalculateFileHash(fullPath) ?? string.Empty; trackedFile.Status = FileStatus.AiModified; trackedFile.LastSentToAiHash = null; trackedFile.ConflictResolutionFile = null; } catch (Exception ex) { Console.Error.WriteLine(Program.GetLocalizedString("ErrorWritingFile", change.Path, ex.Message)); } } changesWouldBeAppliedOrMergeFileCreated = true; } } } if (task != null && mainOutputPackage.TaskUpdates != null) { string originalTaskStatus = task.Status; string newTaskStatus = mainOutputPackage.TaskUpdates.NewStatus ?? originalTaskStatus; string? newAiNotes = mainOutputPackage.TaskUpdates.AiNotes ?? task.AiNotes; DateTime newUpdatedAt = mainOutputPackage.TaskUpdates.UpdatedAt ?? DateTime.UtcNow; if (anyFileSkippedOrMerged && (newTaskStatus == TaskStatus.Completed || newTaskStatus == TaskStatus.Done)) { newTaskStatus = TaskStatus.PendingHumanReview; if(isDryRun) Console.WriteLine(Program.GetLocalizedString("DryRunTaskStatusAdjustedForSkippedFiles", task.TaskId, newTaskStatus)); else Console.WriteLine(Program.GetLocalizedString("TaskStatusAdjustedForSkippedFiles", task.TaskId, newTaskStatus)); } if(isDryRun) { Console.WriteLine(Program.GetLocalizedString("DryRunWouldUpdateTask", task.TaskId, newTaskStatus, newAiNotes ?? "N/A")); } else { task.Status = newTaskStatus; task.AiNotes = newAiNotes; task.UpdatedAt = newUpdatedAt; Console.WriteLine(Program.GetLocalizedString("TaskUpdated", task.TaskId, task.Status)); } changesWouldBeAppliedOrMergeFileCreated = true; } if (!isDryRun) { AIFlowConfigService.SaveConfig(configForSimulation); } else { Console.WriteLine(Program.GetLocalizedString("DryRunWouldSaveConfig")); } if(changesWouldBeAppliedOrMergeFileCreated || mainOutputPackage.TaskUpdates != null) { Console.WriteLine(isDryRun ? Program.GetLocalizedString("DryRunSummaryChanges") : Program.GetLocalizedString("AIOutputIntegrated")); } else { Console.WriteLine(isDryRun ? Program.GetLocalizedString("DryRunSummaryNoChanges") : Program.GetLocalizedString("AIOutputProcessedNoChangesApplied")); } if (isDryRun) { Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine(Program.GetLocalizedString("DryRunModeEnded")); Console.ResetColor(); } } } }
+
+// ============================================================================================
+// Commands/FetchOutputCommand.cs, BranchAndCheckoutCommands.cs, ResolveCommand.cs, RevertIntegrationCommand.cs, SummaryCommand.cs
+// (No changes from previous version for these files)
+// ...
+// ============================================================================================
+namespace AIFlow.Cli.Commands { /* ... FetchOutput, Branch, Checkout, Resolve, RevertIntegration, Summary code remains the same ... */ }
+
+// ============================================================================================
+// Properties/Resources.resx (Illustrative - Ensure all previous strings are present)
+// ... (No new strings needed specifically for this step as they were added in WF003 & UI001)
+// ============================================================================================
