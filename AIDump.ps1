@@ -42,12 +42,7 @@ foreach ($match in $matches) {
 
     # Prepend "src/" if it's a project file path, unless it's a root file
     $finalRelativePath = $relativePath
-    if (($relativePath.StartsWith("Hearthen.Domain") -or `
-         $relativePath.StartsWith("Hearthen.Application") -or `
-         $relativePath.StartsWith("Hearthen.Infrastructure") -or `
-         $relativePath.StartsWith("Hearthen.Api") -or `
-         $relativePath.StartsWith("Hearthen.Shared.Client")) -and `
-         -not $relativePath.Contains("/") # Simple check for root project files like csproj.txt
+    if (-not $relativePath.Contains("/") # Simple check for root project files like csproj.txt
         ) {
         # This logic might need refinement if paths get more complex than simple root files
         # For now, this handles files directly in project roots vs. subfolders.
@@ -55,7 +50,7 @@ foreach ($match in $matches) {
          # It's a file within a project, assume src/ structure
          if (-not $relativePath.StartsWith("src/")) {
             # Check if it's one of the known project prefixes that should be under src/
-            $projectPrefixes = @("Hearthen.Domain", "Hearthen.Application", "Hearthen.Infrastructure", "Hearthen.Api", "Hearthen.Shared.Client")
+            $projectPrefixes = @()
             $isProjectFile = $false
             foreach($prefix in $projectPrefixes) {
                 if($relativePath.StartsWith($prefix)) {
