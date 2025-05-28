@@ -1,0 +1,10 @@
+{
+  "humanRequest": {
+    "taskId": "retrieve-blazor-game-code-001",
+    "taskDescription": "Please provide all project code for the Blazor Server incremental game developed in our previous session (reference artifact 'blazor_full_project_code'). This includes:\n1. All C# model classes (GameState.cs, GameSettings.cs including RebirthConfig, GameData.cs including Achievement, Upgrade, UpgradeEffect, GameOptions.cs, ToastMessage.cs, ToastLevel.cs).\n2. All C# service classes (GameService.cs, ToastService.cs).\n3. The Program.cs file content.\n4. The _Imports.razor file content.\n5. All Razor components (Shared/MainLayout.razor, Pages/Index.razor, Shared/ResourceDisplay.razor, Shared/TaskButton.razor, Shared/ResetButton.razor, Shared/UpgradesDisplay.razor, Shared/AchievementsDisplay.razor, Shared/ModalDialog.razor, Shared/ToastDisplay.razor, Shared/RebirthSection.razor).\n6. The content for all JSON data files (gamesettings.json, achievements.json, upgrades.json) and their intended paths (e.g., wwwroot/data/).\n\nYour response should be an AI Output Package. For each piece of code or file content, create a resource entry specifying its intended file path and the content (Base64 encoded if it's for a file).",
+    "humanRequestGroupId": "HRG-REQUEST-ALL-CODE-001",
+    "partNumber": 1,
+    "totalParts": 1,
+    "filesToProcess": []
+  }
+}
